@@ -4,7 +4,7 @@ import { Audit, AuditSummary, AuditStats, Pagination, User } from '@/types';
 const api = axios.create({
   baseURL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api',
   headers: { 'Content-Type': 'application/json' },
-  timeout: 15000,
+  timeout: 60000,
 });
 
 // Inject auth token from localStorage on every request
