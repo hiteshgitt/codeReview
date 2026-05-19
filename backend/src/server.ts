@@ -1,8 +1,10 @@
 import app from './app';
 import { connectDatabase, disconnectDatabase } from './config/database';
 import { connectRedis, disconnectRedis } from './config/redis';
+import { startWorkerInProcess } from './workers/audit.worker';
 import config from './config';
 import { logger } from './utils/logger';
+import { Worker } from 'bullmq';
 import * as fs from 'fs';
 
 async function start(): Promise<void> {
@@ -11,6 +13,14 @@ async function start(): Promise<void> {
 
   await connectDatabase();
   await connectRedis();
+
+  // Run the audit worker in the same process
+  let worker: Worker | null = null;
+  try {
+    worker = await startWorkerInProcess();
+  } catch (err) {
+    logger.error('Failed to start embedded worker', { err });
+  }
 
   const server = app.listen(config.port, () => {
     logger.info(`Server running on port ${config.port}`, {
@@ -21,6 +31,7 @@ async function start(): Promise<void> {
 
   const shutdown = async (signal: string) => {
     logger.info(`${signal} received — graceful shutdown`);
+    if (worker) await worker.close();
     server.close(async () => {
       await disconnectDatabase();
       await disconnectRedis();

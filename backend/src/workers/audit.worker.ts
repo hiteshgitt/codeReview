@@ -153,12 +153,7 @@ async function processAuditJob(job: Job<AuditJobData>): Promise<void> {
   }
 }
 
-async function startWorker(): Promise<void> {
-  // Ensure temp directory exists
-  fs.mkdirSync(config.audit.tmpDir, { recursive: true });
-
-  await connectDatabase();
-
+export async function startWorkerInProcess(): Promise<Worker<AuditJobData>> {
   const connection = getRedisClient();
 
   const worker = new Worker<AuditJobData>(AUDIT_QUEUE_NAME, processAuditJob, {
@@ -187,18 +182,27 @@ async function startWorker(): Promise<void> {
     concurrency: config.audit.maxConcurrent,
   });
 
-  const shutdown = async () => {
-    logger.info('Worker shutting down...');
-    await worker.close();
-    await prisma.$disconnect();
-    process.exit(0);
-  };
-
-  process.on('SIGTERM', shutdown);
-  process.on('SIGINT', shutdown);
+  return worker;
 }
 
-startWorker().catch((err) => {
-  logger.error('Failed to start worker', { err });
-  process.exit(1);
-});
+// Standalone entry point (local dev / Docker worker)
+if (require.main === module) {
+  (async () => {
+    fs.mkdirSync(config.audit.tmpDir, { recursive: true });
+    await connectDatabase();
+    const worker = await startWorkerInProcess();
+
+    const shutdown = async () => {
+      logger.info('Worker shutting down...');
+      await worker.close();
+      await prisma.$disconnect();
+      process.exit(0);
+    };
+
+    process.on('SIGTERM', shutdown);
+    process.on('SIGINT', shutdown);
+  })().catch((err) => {
+    logger.error('Failed to start worker', { err });
+    process.exit(1);
+  });
+}
