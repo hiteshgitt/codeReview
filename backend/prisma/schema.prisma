@@ -1,0 +1,53 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  audits    Audit[]
+
+  @@map("users")
+}
+
+model Audit {
+  id             String      @id @default(cuid())
+  userId         String
+  user           User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  websiteUrl     String
+  repoUrl        String?
+  name           String?
+  projectType    String    @default("website")
+  framework      String    @default("html")
+  status         AuditStatus @default(PENDING)
+  overallScore   Float?
+  scores         Json?
+  issues         Json?
+  lighthouseData Json?
+  errorMessage   String?
+  jobId          String?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+  completedAt    DateTime?
+
+  @@index([userId])
+  @@index([status])
+  @@map("audits")
+}
+
+enum AuditStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
