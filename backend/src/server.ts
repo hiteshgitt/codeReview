@@ -14,19 +14,17 @@ async function start(): Promise<void> {
   await connectDatabase();
   await connectRedis();
 
-  // Run the audit worker in the same process
   let worker: Worker | null = null;
-  try {
-    worker = await startWorkerInProcess();
-  } catch (err) {
-    logger.error('Failed to start embedded worker', { err });
-  }
 
   const server = app.listen(config.port, () => {
     logger.info(`Server running on port ${config.port}`, {
       env: config.env,
       pid: process.pid,
     });
+    // Start worker after server is listening so startup errors don't block HTTP
+    startWorkerInProcess()
+      .then((w) => { worker = w; })
+      .catch((err) => logger.error('Failed to start embedded worker', { err }));
   });
 
   const shutdown = async (signal: string) => {

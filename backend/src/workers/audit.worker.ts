@@ -158,7 +158,9 @@ export async function startWorkerInProcess(): Promise<Worker<AuditJobData>> {
   const connection = new Redis(url, {
     maxRetriesPerRequest: null,
     enableReadyCheck: false,
+    lazyConnect: true,
   });
+  connection.on('error', (err) => logger.error('BullMQ worker Redis error', { err }));
 
   const worker = new Worker<AuditJobData>(AUDIT_QUEUE_NAME, processAuditJob, {
     connection,
