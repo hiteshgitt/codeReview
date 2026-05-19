@@ -1,6 +1,11 @@
 import { Queue, Job } from 'bullmq';
-import { getRedisClient } from '../config/redis';
+import { Redis } from 'ioredis';
 import { logger } from '../utils/logger';
+
+function newBullConnection(): Redis {
+  const url = process.env.REDIS_URL || 'redis://localhost:6379';
+  return new Redis(url, { maxRetriesPerRequest: null, enableReadyCheck: false });
+}
 
 export const AUDIT_QUEUE_NAME = 'audit-jobs';
 
@@ -19,7 +24,7 @@ let auditQueue: Queue<AuditJobData, any, string> | null = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function getAuditQueue(): Queue<AuditJobData, any, string> {
   if (!auditQueue) {
-    const connection = getRedisClient();
+    const connection = newBullConnection();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     auditQueue = new Queue<AuditJobData, any, string>(AUDIT_QUEUE_NAME, {
       connection,

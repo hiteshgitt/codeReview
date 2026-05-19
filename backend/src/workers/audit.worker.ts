@@ -1,5 +1,5 @@
 import { Worker, Job } from 'bullmq';
-import { getRedisClient } from '../config/redis';
+import { Redis } from 'ioredis';
 import { prisma } from '../config/database';
 import { connectDatabase } from '../config/database';
 import { AUDIT_QUEUE_NAME, AuditJobData } from '../services/queue.service';
@@ -154,7 +154,11 @@ async function processAuditJob(job: Job<AuditJobData>): Promise<void> {
 }
 
 export async function startWorkerInProcess(): Promise<Worker<AuditJobData>> {
-  const connection = getRedisClient();
+  const url = process.env.REDIS_URL || 'redis://localhost:6379';
+  const connection = new Redis(url, {
+    maxRetriesPerRequest: null,
+    enableReadyCheck: false,
+  });
 
   const worker = new Worker<AuditJobData>(AUDIT_QUEUE_NAME, processAuditJob, {
     connection,
