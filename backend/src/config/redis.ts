@@ -1,17 +1,15 @@
 import { Redis } from 'ioredis';
-import config from './index';
 import { logger } from '../utils/logger';
 
 let redisClient: Redis | null = null;
 
 export function getRedisClient(): Redis {
   if (!redisClient) {
-    redisClient = new Redis({
-      host: config.redis.host,
-      port: config.redis.port,
-      password: config.redis.password,
+    const url = process.env.REDIS_URL || 'redis://localhost:6379';
+    redisClient = new Redis(url, {
       maxRetriesPerRequest: null,
       lazyConnect: true,
+      enableReadyCheck: false, // required for Upstash
     });
 
     redisClient.on('connect', () => logger.info('Redis connected'));
