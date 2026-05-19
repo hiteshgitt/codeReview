@@ -4,7 +4,7 @@ import { logger } from '../utils/logger';
 
 function newBullConnection(): Redis {
   const url = process.env.REDIS_URL || 'redis://localhost:6379';
-  const client = new Redis(url, { maxRetriesPerRequest: null, enableReadyCheck: false, lazyConnect: true });
+  const client = new Redis(url, { maxRetriesPerRequest: null, enableReadyCheck: false });
   client.on('error', (err) => logger.error('BullMQ queue Redis error', { err }));
   return client;
 }
