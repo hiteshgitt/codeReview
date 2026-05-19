@@ -8,21 +8,22 @@ export function getRedisClient(): Redis {
     const url = process.env.REDIS_URL || 'redis://localhost:6379';
     redisClient = new Redis(url, {
       maxRetriesPerRequest: null,
-      lazyConnect: true,
-      enableReadyCheck: false, // required for Upstash
+      enableReadyCheck: false,
     });
 
     redisClient.on('connect', () => logger.info('Redis connected'));
-    redisClient.on('error', (err) => logger.error('Redis error', { err }));
+    redisClient.on('ready', () => logger.info('Redis ready'));
+    redisClient.on('error', (err) => logger.error('Redis error', { err: err.message }));
     redisClient.on('close', () => logger.warn('Redis connection closed'));
+    redisClient.on('reconnecting', () => logger.info('Redis reconnecting'));
   }
 
   return redisClient;
 }
 
+// Just initialise the client — ioredis auto-connects, no need to await
 export async function connectRedis(): Promise<void> {
-  const client = getRedisClient();
-  await client.connect();
+  getRedisClient();
 }
 
 export async function disconnectRedis(): Promise<void> {
