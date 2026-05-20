@@ -11,6 +11,8 @@ interface LighthouseOptions {
   throttlingMethod?: 'simulate' | 'devtools' | 'provided';
 }
 
+const LIGHTHOUSE_TIMEOUT_MS = 90_000;
+
 async function runLighthouseAnalysis(url: string): Promise<LighthouseData | null> {
   let chrome: chromeLauncher.LaunchedChrome | null = null;
 
@@ -23,8 +25,17 @@ async function runLighthouseAnalysis(url: string): Promise<LighthouseData | null
         '--disable-dev-shm-usage',
         '--disable-gpu',
         '--no-first-run',
+        '--no-zygote',
+        '--single-process',
         '--disable-extensions',
         '--disable-background-networking',
+        '--disable-translate',
+        '--disable-sync',
+        '--hide-scrollbars',
+        '--mute-audio',
+        '--disable-breakpad',
+        '--disable-infobars',
+        '--window-size=1280,720',
       ],
     });
 
@@ -39,7 +50,13 @@ async function runLighthouseAnalysis(url: string): Promise<LighthouseData | null
       throttlingMethod: 'simulate',
     };
 
-    const result = await lighthouse(url, options as Parameters<typeof lighthouse>[1]);
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Lighthouse timeout')), LIGHTHOUSE_TIMEOUT_MS),
+    );
+    const result = await Promise.race([
+      lighthouse(url, options as Parameters<typeof lighthouse>[1]),
+      timeoutPromise,
+    ]);
 
     if (!result?.lhr) return null;
 

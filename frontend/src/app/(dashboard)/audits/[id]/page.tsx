@@ -88,14 +88,23 @@ export default function AuditDetailPage() {
   const [loading, setLoading] = useState(true);
   const [downloading, setDownloading] = useState(false);
 
-  const fetchAudit = useCallback(async () => {
+  const fetchAudit = useCallback(async (isPolling = false) => {
     try {
       const data = await getAudit(id);
       setAudit(data);
       return data;
     } catch (error) {
-      toast.error(getErrorMessage(error));
-      router.push('/audits');
+      if (isPolling) {
+        // During polling, a transient network error should not redirect — just log it silently
+        return null;
+      }
+      // On initial load: redirect only for 404 (audit not found); show toast for everything else
+      const status = (error as { response?: { status?: number } })?.response?.status;
+      if (status === 404) {
+        router.push('/audits');
+      } else {
+        toast.error(getErrorMessage(error));
+      }
       return null;
     } finally {
       setLoading(false);
@@ -103,7 +112,7 @@ export default function AuditDetailPage() {
   }, [id, router]);
 
   useEffect(() => {
-    fetchAudit();
+    fetchAudit(false);
   }, [fetchAudit]);
 
   // Poll while pending or running
@@ -112,14 +121,14 @@ export default function AuditDetailPage() {
     if (audit.status !== 'PENDING' && audit.status !== 'RUNNING') return;
 
     const interval = setInterval(async () => {
-      const data = await fetchAudit();
+      const data = await fetchAudit(true);
       if (data && data.status !== 'PENDING' && data.status !== 'RUNNING') {
         clearInterval(interval);
         if (data.status === 'COMPLETED') {
           toast.success('Audit completed!');
         }
       }
-    }, 5000);
+    }, 8000);
 
     return () => clearInterval(interval);
   }, [audit?.status, fetchAudit]);
