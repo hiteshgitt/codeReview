@@ -2,6 +2,7 @@ import app from './app';
 import { connectDatabase, disconnectDatabase } from './config/database';
 import { connectRedis, disconnectRedis } from './config/redis';
 import { startWorkerInProcess } from './workers/audit.worker';
+import { getAuditQueue } from './services/queue.service';
 import config from './config';
 import { logger } from './utils/logger';
 import { Worker } from 'bullmq';
@@ -13,6 +14,9 @@ async function start(): Promise<void> {
 
   await connectDatabase();
   await connectRedis();
+
+  // Pre-warm the BullMQ queue connection so it's ready before first request
+  try { getAuditQueue(); } catch (err) { logger.warn('Queue pre-warm failed', { err }); }
 
   let worker: Worker | null = null;
 

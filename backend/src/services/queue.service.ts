@@ -50,9 +50,13 @@ class QueueService {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async enqueueAudit(data: AuditJobData): Promise<Job<AuditJobData, any, string>> {
     const queue = getAuditQueue();
-    const job = await queue.add('run-audit', data, {
-      jobId: `audit-${data.auditId}`,
-    });
+    const timeout = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Redis queue timeout after 15s')), 15000)
+    );
+    const job = await Promise.race([
+      queue.add('run-audit', data, { jobId: `audit-${data.auditId}` }),
+      timeout,
+    ]);
     logger.info('Audit job enqueued', { jobId: job.id, auditId: data.auditId });
     return job;
   }
