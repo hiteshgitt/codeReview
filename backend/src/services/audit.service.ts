@@ -1,5 +1,5 @@
 import { prisma } from '../config/database';
-import { queueService } from './queue.service';
+import { scheduleAudit } from './audit.processor';
 import { AppError } from '../middleware/error';
 import { CreateAuditDto } from '../types';
 import { logger } from '../utils/logger';
@@ -21,29 +21,16 @@ export class AuditService {
       },
     });
 
-    try {
-      const job = await queueService.enqueueAudit({
-        auditId: audit.id,
-        websiteUrl: dto.websiteUrl,
-        repoUrl: dto.repoUrl,
-        repoToken: dto.repoToken,
-        projectType,
-        framework,
-      });
+    scheduleAudit({
+      auditId: audit.id,
+      websiteUrl: dto.websiteUrl,
+      repoUrl: dto.repoUrl,
+      repoToken: dto.repoToken,
+      projectType,
+      framework,
+    });
 
-      await prisma.audit.update({
-        where: { id: audit.id },
-        data: { jobId: job.id?.toString() },
-      });
-
-      logger.info('Audit queued', { auditId: audit.id, jobId: job.id });
-    } catch (error) {
-      logger.error('Failed to queue audit job', { error, auditId: audit.id });
-      await prisma.audit.update({
-        where: { id: audit.id },
-        data: { status: 'FAILED', errorMessage: 'Failed to queue audit job' },
-      });
-    }
+    logger.info('Audit scheduled', { auditId: audit.id });
 
     return audit;
   }

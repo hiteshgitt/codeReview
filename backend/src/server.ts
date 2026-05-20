@@ -1,39 +1,25 @@
 import app from './app';
 import { connectDatabase, disconnectDatabase } from './config/database';
 import { connectRedis, disconnectRedis } from './config/redis';
-import { startWorkerInProcess } from './workers/audit.worker';
-import { getAuditQueue } from './services/queue.service';
 import config from './config';
 import { logger } from './utils/logger';
-import { Worker } from 'bullmq';
 import * as fs from 'fs';
 
 async function start(): Promise<void> {
-  // Ensure temp dir exists
   fs.mkdirSync(config.audit.tmpDir, { recursive: true });
 
   await connectDatabase();
   await connectRedis();
-
-  // Pre-warm the BullMQ queue connection so it's ready before first request
-  try { getAuditQueue(); } catch (err) { logger.warn('Queue pre-warm failed', { err }); }
-
-  let worker: Worker | null = null;
 
   const server = app.listen(config.port, () => {
     logger.info(`Server running on port ${config.port}`, {
       env: config.env,
       pid: process.pid,
     });
-    // Start worker after server is listening so startup errors don't block HTTP
-    startWorkerInProcess()
-      .then((w) => { worker = w; })
-      .catch((err) => logger.error('Failed to start embedded worker', { err }));
   });
 
   const shutdown = async (signal: string) => {
     logger.info(`${signal} received — graceful shutdown`);
-    if (worker) await worker.close();
     server.close(async () => {
       await disconnectDatabase();
       await disconnectRedis();
