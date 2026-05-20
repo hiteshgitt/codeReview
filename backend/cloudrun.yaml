@@ -1,0 +1,45 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: web-audit-pro-backend
+  annotations:
+    run.googleapis.com/ingress: all
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/minScale: "0"
+        autoscaling.knative.dev/maxScale: "2"
+        run.googleapis.com/execution-environment: gen2
+    spec:
+      containerConcurrency: 10
+      timeoutSeconds: 300
+      containers:
+        - image: IMAGE_PLACEHOLDER
+          ports:
+            - containerPort: 8080
+          resources:
+            limits:
+              memory: 2Gi
+              cpu: "2"
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: PORT
+              value: "8080"
+            - name: JWT_EXPIRES_IN
+              value: 7d
+            - name: MAX_CONCURRENT_AUDITS
+              value: "2"
+            - name: AUDIT_TMP_DIR
+              value: /tmp/web-audit-pro
+            # Set these via: gcloud run services update ... --set-env-vars KEY=VALUE
+            # Or use Secret Manager for sensitive values
+            - name: DATABASE_URL
+              value: REPLACE_ME
+            - name: REDIS_URL
+              value: REPLACE_ME
+            - name: JWT_SECRET
+              value: REPLACE_ME
+            - name: FRONTEND_URL
+              value: REPLACE_ME
