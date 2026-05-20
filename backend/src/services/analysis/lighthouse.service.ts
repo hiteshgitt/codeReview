@@ -18,6 +18,7 @@ async function runLighthouseAnalysis(url: string): Promise<LighthouseData | null
 
   try {
     chrome = await chromeLauncher.launch({
+      chromePath: process.env.CHROME_PATH || undefined,
       chromeFlags: [
         '--headless',
         '--no-sandbox',
@@ -26,7 +27,6 @@ async function runLighthouseAnalysis(url: string): Promise<LighthouseData | null
         '--disable-gpu',
         '--no-first-run',
         '--no-zygote',
-        '--single-process',
         '--disable-extensions',
         '--disable-background-networking',
         '--disable-translate',

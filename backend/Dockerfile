@@ -1,7 +1,7 @@
 FROM node:20-alpine
 
 # Install Chromium for Lighthouse (Alpine repos, much lighter than Google Chrome .deb)
-RUN apk add --no-cache chromium nss freetype harfbuzz ca-certificates ttf-freefont openssl
+RUN apk add --no-cache chromium nss freetype harfbuzz ca-certificates ttf-freefont openssl git
 
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser \
     PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
