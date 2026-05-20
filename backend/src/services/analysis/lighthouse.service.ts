@@ -1,68 +1,59 @@
-import * as chromeLauncher from 'chrome-launcher';
 import { logger } from '../../utils/logger';
 import { LighthouseData, AuditIssue, CategoryResult } from '../../types';
 import { v4 as uuidv4 } from 'uuid';
 
-interface LighthouseOptions {
-  port: number;
-  output: 'json';
-  logLevel: 'silent' | 'error' | 'info' | 'verbose';
-  onlyCategories?: string[];
-  throttlingMethod?: 'simulate' | 'devtools' | 'provided';
+const PSI_TIMEOUT_MS = 60_000;
+
+interface PsiAudit {
+  title: string;
+  description?: string;
+  score: number | null;
+  scoreDisplayMode: string;
+  displayValue?: string;
+  numericValue?: number;
 }
 
-const LIGHTHOUSE_TIMEOUT_MS = 90_000;
+interface PsiResponse {
+  lighthouseResult: {
+    categories: {
+      performance?: { score: number | null };
+      accessibility?: { score: number | null };
+      'best-practices'?: { score: number | null };
+      seo?: { score: number | null };
+    };
+    audits: Record<string, PsiAudit>;
+  };
+}
 
-async function runLighthouseAnalysis(url: string): Promise<LighthouseData | null> {
-  let chrome: chromeLauncher.LaunchedChrome | null = null;
+async function fetchPSI(url: string): Promise<LighthouseData | null> {
+  const apiKey = process.env.GOOGLE_PAGESPEED_API_KEY;
+  const base = 'https://www.googleapis.com/pagespeedonline/v5/runPagespeed';
+  const params = new URLSearchParams({
+    url,
+    strategy: 'mobile',
+    category: 'performance',
+  });
+  // PSI only accepts one category per param key — use append for multiples
+  (['accessibility', 'best-practices', 'seo'] as const).forEach((c) =>
+    params.append('category', c),
+  );
+  if (apiKey) params.set('key', apiKey);
+
+  const endpoint = `${base}?${params.toString()}`;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PSI_TIMEOUT_MS);
 
   try {
-    chrome = await chromeLauncher.launch({
-      chromePath: process.env.CHROME_PATH || undefined,
-      chromeFlags: [
-        '--headless',
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--no-first-run',
-        '--no-zygote',
-        '--disable-extensions',
-        '--disable-background-networking',
-        '--disable-translate',
-        '--disable-sync',
-        '--hide-scrollbars',
-        '--mute-audio',
-        '--disable-breakpad',
-        '--disable-infobars',
-        '--window-size=1280,720',
-      ],
-    });
+    const res = await fetch(endpoint, { signal: controller.signal });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      logger.error('PSI API error', { status: res.status, body: body.slice(0, 200) });
+      return null;
+    }
 
-    // Dynamic import for ESM lighthouse
-    const lighthouse = (await import('lighthouse')).default;
-
-    const options: LighthouseOptions = {
-      port: chrome.port,
-      output: 'json',
-      logLevel: 'error',
-      onlyCategories: ['performance', 'accessibility', 'best-practices', 'seo'],
-      throttlingMethod: 'simulate',
-    };
-
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Lighthouse timeout')), LIGHTHOUSE_TIMEOUT_MS),
-    );
-    const result = await Promise.race([
-      lighthouse(url, options as Parameters<typeof lighthouse>[1]),
-      timeoutPromise,
-    ]);
-
-    if (!result?.lhr) return null;
-
-    const lhr = result.lhr;
-    const categories = lhr.categories;
-    const audits = lhr.audits;
+    const data: PsiResponse = await res.json();
+    const { categories, audits } = data.lighthouseResult;
 
     return {
       performance: (categories.performance?.score ?? 0) * 10,
@@ -92,12 +83,10 @@ async function runLighthouseAnalysis(url: string): Promise<LighthouseData | null
       ),
     };
   } catch (error) {
-    logger.error('Lighthouse analysis failed', { error, url });
+    logger.error('PSI fetch failed', { error, url });
     return null;
   } finally {
-    if (chrome) {
-      try { await Promise.resolve(chrome.kill()); } catch { /* ignore */ }
-    }
+    clearTimeout(timer);
   }
 }
 
@@ -108,7 +97,7 @@ export async function analyzeLighthouse(url: string): Promise<{
   bestPractices: CategoryResult;
   lighthouseData: LighthouseData | null;
 }> {
-  const lhData = await runLighthouseAnalysis(url);
+  const lhData = await fetchPSI(url);
 
   if (!lhData) {
     return {
@@ -475,7 +464,7 @@ function buildBestPracticesResult(lhData: LighthouseData): CategoryResult {
 }
 
 function buildFallbackResult(category: string): CategoryResult {
-  logger.warn(`Using fallback result for category: ${category} (Lighthouse unavailable)`);
+  logger.warn(`Using fallback result for category: ${category} (PSI API unavailable)`);
   return {
     score: 0,
     issues: [
@@ -484,9 +473,9 @@ function buildFallbackResult(category: string): CategoryResult {
         category: category as AuditIssue['category'],
         severity: 'suggestion',
         title: 'Analysis unavailable',
-        description: 'Lighthouse analysis could not be completed. Chrome may not be installed.',
-        recommendation: 'Install Google Chrome and ensure PUPPETEER_EXECUTABLE_PATH is configured.',
-        impact: 'Full analysis requires Chrome/Chromium to be installed on the server.',
+        description: 'PageSpeed Insights API could not be reached for this URL.',
+        recommendation: 'Ensure the website is publicly accessible and try again.',
+        impact: 'Performance, accessibility, and best practices data require a reachable URL.',
       },
     ],
     metrics: {},
