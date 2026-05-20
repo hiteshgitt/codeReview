@@ -1,256 +1,183 @@
-import puppeteer, { Browser } from 'puppeteer';
 import { v4 as uuidv4 } from 'uuid';
 import { CategoryResult, AuditIssue } from '../../types';
 import { logger } from '../../utils/logger';
 
-const VIEWPORTS = [
-  { width: 320,  height: 568,  label: '320px (Mobile S)' },
-  { width: 375,  height: 667,  label: '375px (Mobile)' },
-  { width: 768,  height: 1024, label: '768px (Tablet)' },
-  { width: 1024, height: 768,  label: '1024px (Laptop)' },
-  { width: 1440, height: 900,  label: '1440px (Desktop)' },
-  { width: 1920, height: 1080, label: '1920px (Wide)' },
-];
+const FETCH_TIMEOUT_MS = 20_000;
 
-interface ViewportResult {
-  label: string;
-  width: number;
-  hasHorizontalOverflow: boolean;
-  overflowingElements: string[];
-  smallTextCount: number;
-  smallTouchTargets: number;
-  imagesOverflowing: number;
-}
-
-interface PageMeta {
+interface HtmlAnalysis {
   viewportMeta: string;
   hasMediaQueries: boolean;
+  hasFlexOrGrid: boolean;
+  hasResponsiveFramework: string | null;
+  fixedWidthCount: number;
+  imagesMissingMaxWidth: boolean;
+  hasViewportUnits: boolean;
+  hasTableLayout: boolean;
+  disablesUserZoom: boolean;
+  inlineStyleCount: number;
+  cssText: string;
+}
+
+async function fetchHtml(url: string): Promise<string> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; WebAuditBot/1.0)' },
+    });
+    return await res.text();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function extractCss(html: string): string {
+  const styleBlocks = [...html.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/gi)].map(m => m[1]);
+  const inlineStyles = [...html.matchAll(/style="([^"]+)"/gi)].map(m => m[1]);
+  return [...styleBlocks, ...inlineStyles].join('\n');
+}
+
+function analyzeHtml(html: string): HtmlAnalysis {
+  const lower = html.toLowerCase();
+  const cssText = extractCss(html);
+
+  // Viewport meta
+  const vmMatch = html.match(/<meta[^>]+name=["']viewport["'][^>]*content=["']([^"']+)["']/i)
+    || html.match(/<meta[^>]+content=["']([^"']+)["'][^>]*name=["']viewport["']/i);
+  const viewportMeta = vmMatch?.[1] ?? '';
+
+  // Media queries
+  const hasMediaQueries = /@media\s/i.test(cssText) || /@media\s/i.test(html);
+
+  // Flex / grid
+  const hasFlexOrGrid = /display\s*:\s*(flex|grid)/i.test(cssText);
+
+  // Responsive framework detection
+  let hasResponsiveFramework: string | null = null;
+  if (/bootstrap/i.test(html) || /class="[^"]*col-[a-z]{2}-\d/.test(html) || /class="[^"]*container(-fluid)?["\s]/.test(html)) {
+    hasResponsiveFramework = 'Bootstrap';
+  } else if (/tailwind/i.test(html) || /class="[^"]*(?:sm:|md:|lg:|xl:)[^"]*"/.test(html)) {
+    hasResponsiveFramework = 'Tailwind CSS';
+  } else if (/foundation/i.test(html) && /class="[^"]*(?:small|medium|large)-\d/.test(html)) {
+    hasResponsiveFramework = 'Foundation';
+  } else if (/bulma/i.test(html) || /class="[^"]*(?:is-mobile|is-tablet|is-desktop)["\s]/.test(html)) {
+    hasResponsiveFramework = 'Bulma';
+  }
+
+  // Fixed widths in CSS (e.g. width: 960px outside media queries — rough check)
+  const fixedWidthMatches = cssText.match(/width\s*:\s*\d{3,4}px/gi) ?? [];
+  const fixedWidthCount = fixedWidthMatches.length;
+
+  // Images missing max-width
+  const imgCss = cssText + lower;
+  const imagesMissingMaxWidth = !/img[^{]*{[^}]*max-width\s*:\s*100%/i.test(cssText)
+    && !/img[^{]*{[^}]*width\s*:\s*100%/i.test(cssText);
+
+  // Viewport/fluid units
+  const hasViewportUnits = /\d+(?:vw|vh|vmin|vmax|%|rem|em)\b/i.test(cssText);
+
+  // Table layout (layout tables, not data tables)
+  const tableCount = (html.match(/<table/gi) ?? []).length;
+  const hasTableLayout = tableCount > 3;
+
+  // User zoom disabled
+  const disablesUserZoom = /user-scalable\s*=\s*no/i.test(viewportMeta)
+    || /maximum-scale\s*=\s*1(?:[^.]|$)/i.test(viewportMeta);
+
+  // Inline style abuse
+  const inlineStyleCount = (html.match(/style="/gi) ?? []).length;
+
+  return {
+    viewportMeta,
+    hasMediaQueries,
+    hasFlexOrGrid,
+    hasResponsiveFramework,
+    fixedWidthCount,
+    imagesMissingMaxWidth,
+    hasViewportUnits,
+    hasTableLayout,
+    disablesUserZoom,
+    inlineStyleCount,
+    cssText,
+  };
 }
 
 export async function analyzeResponsiveness(url: string): Promise<CategoryResult> {
   const issues: AuditIssue[] = [];
   const metrics: Record<string, string | number | boolean | null> = {};
-  let browser: Browser | null = null;
 
   try {
-    browser = await puppeteer.launch({
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium-browser',
-      headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--no-first-run',
-        '--disable-extensions',
-      ],
-    });
+    const html = await fetchHtml(url);
+    const a = analyzeHtml(html);
 
-    const viewportResults: ViewportResult[] = [];
-    let pageMeta: PageMeta | null = null;
+    metrics.viewportMeta = a.viewportMeta || null;
+    metrics.hasMediaQueries = a.hasMediaQueries;
+    metrics.hasFlexOrGrid = a.hasFlexOrGrid;
+    metrics.responsiveFramework = a.hasResponsiveFramework;
+    metrics.fixedWidthCount = a.fixedWidthCount;
 
-    for (const vp of VIEWPORTS) {
-      const page = await browser.newPage();
-      try {
-        await page.setViewport({ width: vp.width, height: vp.height, deviceScaleFactor: 1 });
-        await page.goto(url, { waitUntil: 'networkidle2', timeout: 20000 });
-
-        // Collect page-level meta once (first viewport)
-        if (!pageMeta) {
-          pageMeta = await page.evaluate((): PageMeta => {
-            const vm = document.querySelector('meta[name="viewport"]')?.getAttribute('content') ?? '';
-            const styles = Array.from(document.querySelectorAll('style'))
-              .map(s => s.textContent || '')
-              .join('');
-            const sheets = (() => {
-              try {
-                return Array.from(document.styleSheets)
-                  .map(s => {
-                    try { return Array.from(s.cssRules).map(r => r.cssText).join(' '); }
-                    catch { return ''; }
-                  })
-                  .join('');
-              } catch { return ''; }
-            })();
-            const hasMQ = /@media\s/i.test(styles) || /@media\s/i.test(sheets);
-            return { viewportMeta: vm, hasMediaQueries: hasMQ };
-          });
-        }
-
-        const result = await page.evaluate((vpWidth): Omit<ViewportResult, 'label' | 'width'> => {
-          const isMobile = vpWidth < 768;
-
-          // Horizontal overflow
-          const hasHorizontalOverflow =
-            document.documentElement.scrollWidth > document.documentElement.clientWidth + 2;
-
-          // Find elements causing overflow
-          const overflowingElements: string[] = [];
-          if (hasHorizontalOverflow) {
-            document.querySelectorAll('body *').forEach(el => {
-              const rect = el.getBoundingClientRect();
-              if (rect.right > vpWidth + 5) {
-                const tag = el.tagName.toLowerCase();
-                const id = el.id ? `#${el.id}` : '';
-                const cls = el.className && typeof el.className === 'string'
-                  ? `.${el.className.trim().split(/\s+/)[0]}`
-                  : '';
-                const label = `<${tag}${id}${cls}>`;
-                if (!overflowingElements.includes(label)) {
-                  overflowingElements.push(label);
-                }
-              }
-            });
-          }
-
-          // Small text (only flag on mobile viewports)
-          let smallTextCount = 0;
-          if (isMobile) {
-            document.querySelectorAll('p, span, a, li, td, div').forEach(el => {
-              if ((el.children.length === 0 || el.tagName === 'A') && (el.textContent?.trim().length ?? 0) > 3) {
-                const fs = parseFloat(window.getComputedStyle(el).fontSize);
-                if (fs > 0 && fs < 11) smallTextCount++;
-              }
-            });
-          }
-
-          // Small touch targets (only flag on mobile viewports)
-          let smallTouchTargets = 0;
-          if (isMobile) {
-            document.querySelectorAll('a, button, [role="button"], input, select, textarea').forEach(el => {
-              const rect = el.getBoundingClientRect();
-              if (rect.width > 0 && rect.height > 0 && (rect.width < 44 || rect.height < 44)) {
-                smallTouchTargets++;
-              }
-            });
-          }
-
-          // Images overflowing container
-          let imagesOverflowing = 0;
-          document.querySelectorAll('img').forEach(img => {
-            const rect = img.getBoundingClientRect();
-            if (rect.width > vpWidth + 5) imagesOverflowing++;
-          });
-
-          return {
-            hasHorizontalOverflow,
-            overflowingElements: overflowingElements.slice(0, 5),
-            smallTextCount,
-            smallTouchTargets,
-            imagesOverflowing,
-          };
-        }, vp.width);
-
-        viewportResults.push({ label: vp.label, width: vp.width, ...result });
-      } catch (err) {
-        logger.warn('Viewport test failed', { viewport: vp.label, err });
-        viewportResults.push({
-          label: vp.label,
-          width: vp.width,
-          hasHorizontalOverflow: false,
-          overflowingElements: [],
-          smallTextCount: 0,
-          smallTouchTargets: 0,
-          imagesOverflowing: 0,
-        });
-      } finally {
-        await page.close();
-      }
-    }
-
-    // ── Analyse results ──────────────────────────────────────────────────────
-
-    // Viewport meta
-    const viewportMeta = pageMeta?.viewportMeta ?? '';
-    metrics.viewportMeta = viewportMeta || null;
-    metrics.hasMediaQueries = pageMeta?.hasMediaQueries ?? false;
-    metrics.viewportsTested = VIEWPORTS.length;
-
-    if (!viewportMeta) {
+    // ── Viewport meta ───────────────────────────────────────────────────────
+    if (!a.viewportMeta) {
       issues.push(makeIssue('critical', 'Missing viewport meta tag',
-        'No <meta name="viewport"> tag found.',
-        'Add <meta name="viewport" content="width=device-width, initial-scale=1"> to the <head>.',
-        'Without this tag, mobile browsers render the page at desktop width making it unreadable on phones.'));
-    } else if (!viewportMeta.includes('width=device-width')) {
-      issues.push(makeIssue('major', 'Viewport meta tag not using device-width',
-        `Current viewport: "${viewportMeta}"`,
-        'Set viewport to "width=device-width, initial-scale=1".',
+        'No <meta name="viewport"> tag found in the page head.',
+        'Add <meta name="viewport" content="width=device-width, initial-scale=1"> to <head>.',
+        'Without this tag, mobile browsers render the page at desktop width, making it unreadable on phones.'));
+    } else if (!a.viewportMeta.includes('width=device-width')) {
+      issues.push(makeIssue('major', 'Viewport meta not using device-width',
+        `Current viewport content: "${a.viewportMeta}"`,
+        'Set viewport to content="width=device-width, initial-scale=1".',
         'The layout will not adapt to mobile screen widths.'));
     }
 
-    if (viewportMeta.includes('user-scalable=no') || viewportMeta.includes('maximum-scale=1')) {
+    if (a.disablesUserZoom) {
       issues.push(makeIssue('major', 'Viewport disables user zoom',
-        'The viewport meta tag prevents users from zooming.',
-        'Remove user-scalable=no and maximum-scale=1.',
+        'The viewport meta tag contains user-scalable=no or maximum-scale=1.',
+        'Remove user-scalable=no and maximum-scale=1 from the viewport tag.',
         'Blocking zoom breaks accessibility for users with visual impairments.'));
     }
 
-    if (!pageMeta?.hasMediaQueries) {
+    // ── Media queries ───────────────────────────────────────────────────────
+    if (!a.hasMediaQueries) {
       issues.push(makeIssue('major', 'No CSS media queries detected',
-        'No responsive breakpoints found in any stylesheet.',
-        'Add @media queries for mobile, tablet and desktop breakpoints.',
+        'No @media rules found in any inline stylesheet.',
+        'Add @media queries for mobile (<768px), tablet (<1024px), and desktop breakpoints.',
         'Without media queries the layout will not adapt to different screen sizes.'));
     }
 
-    // Horizontal overflow issues per viewport
-    const overflowViewports = viewportResults.filter(r => r.hasHorizontalOverflow);
-    metrics.viewportsWithOverflow = overflowViewports.length;
-
-    if (overflowViewports.length > 0) {
-      const breakpoints = overflowViewports.map(r => r.label).join(', ');
-      const allOffenders = [...new Set(overflowViewports.flatMap(r => r.overflowingElements))].slice(0, 6);
-
-      const severity = overflowViewports.some(r => r.width <= 768) ? 'critical' : 'major';
-      issues.push(makeIssue(severity,
-        `Horizontal overflow at ${overflowViewports.length} breakpoint(s)`,
-        `Horizontal scrollbar appears at: ${breakpoints}.${allOffenders.length ? ` Likely culprits: ${allOffenders.join(', ')}` : ''}`,
-        'Use max-width: 100%, overflow-x: hidden on containers, or switch fixed widths to fluid units (%, vw, rem).',
-        'Horizontal scrolling is a critical UX failure on mobile devices.'));
+    // ── Fixed widths ────────────────────────────────────────────────────────
+    if (a.fixedWidthCount > 5) {
+      issues.push(makeIssue('minor', 'Many fixed pixel widths in CSS',
+        `Found ${a.fixedWidthCount} instances of fixed pixel widths (e.g. width: 960px).`,
+        'Replace fixed widths with fluid units: %, vw, max-width, or CSS Grid/Flexbox.',
+        'Fixed widths cause content to overflow or be cut off on smaller screens.'));
     }
 
-    // Per-viewport overflow detail for mobile
-    for (const r of viewportResults.filter(r => r.hasHorizontalOverflow && r.width <= 768)) {
-      if (r.overflowingElements.length > 0) {
-        issues.push(makeIssue('major',
-          `Overflow elements at ${r.label}`,
-          `Elements extending beyond the viewport: ${r.overflowingElements.join(', ')}`,
-          'Inspect each element and replace any fixed widths with responsive units.',
-          `These elements break the layout at ${r.label}.`));
-      }
-    }
-
-    // Small text on mobile
-    const smallTextViewports = viewportResults.filter(r => r.smallTextCount > 3);
-    if (smallTextViewports.length > 0) {
-      const worst = smallTextViewports.sort((a, b) => b.smallTextCount - a.smallTextCount)[0];
-      issues.push(makeIssue('minor', 'Text too small on mobile',
-        `${worst.smallTextCount} text elements have a font-size below 11px at ${worst.label}.`,
-        'Set a minimum font-size of 14-16px for body text; use rem units so text scales with user preferences.',
-        'Text smaller than 12px is unreadable on mobile without zooming.'));
-    }
-
-    // Small touch targets on mobile
-    const touchViewports = viewportResults.filter(r => r.smallTouchTargets > 3);
-    if (touchViewports.length > 0) {
-      const worst = touchViewports.sort((a, b) => b.smallTouchTargets - a.smallTouchTargets)[0];
-      issues.push(makeIssue('minor', 'Touch targets too small on mobile',
-        `${worst.smallTouchTargets} interactive elements are smaller than 44×44px at ${worst.label}.`,
-        'Ensure all buttons, links, and form controls are at least 44×44px (WCAG 2.5.5).',
-        'Small tap targets cause mis-taps and frustrate mobile users.'));
-    }
-
-    // Images overflowing
-    const imgOverflow = viewportResults.filter(r => r.imagesOverflowing > 0);
-    if (imgOverflow.length > 0) {
-      issues.push(makeIssue('minor', 'Images overflowing viewport',
-        `Images wider than the viewport at: ${imgOverflow.map(r => r.label).join(', ')}.`,
+    // ── Images ──────────────────────────────────────────────────────────────
+    if (a.imagesMissingMaxWidth) {
+      issues.push(makeIssue('minor', 'Images may overflow their containers',
+        'No global img { max-width: 100% } rule detected in inline styles.',
         'Add img { max-width: 100%; height: auto; } to your global CSS.',
-        'Oversized images break layouts and cause horizontal scrolling on mobile.'));
+        'Without this, images can overflow their containers and break mobile layouts.'));
     }
 
-    metrics.overflowBreakpoints = overflowViewports.map(r => r.width).join(',') || null;
+    // ── Table layout ────────────────────────────────────────────────────────
+    if (a.hasTableLayout) {
+      issues.push(makeIssue('minor', 'Table-based layout detected',
+        `Found ${(html.match(/<table/gi) ?? []).length} table elements — may indicate table-based layout.`,
+        'Replace table layouts with CSS Flexbox or Grid for responsive behaviour.',
+        'Table layouts do not reflow on mobile and cause horizontal scrolling.'));
+    }
 
-    const score = calculateScore(issues, metrics);
+    // ── Positive signals summary ────────────────────────────────────────────
+    metrics.responsiveSignals = [
+      a.hasMediaQueries && 'media-queries',
+      a.hasFlexOrGrid && 'flex/grid',
+      a.hasResponsiveFramework && a.hasResponsiveFramework,
+      a.hasViewportUnits && 'fluid-units',
+    ].filter(Boolean).join(', ') || 'none';
+
+    const score = calculateScore(issues, a);
     return { score, issues, metrics };
 
   } catch (error) {
@@ -258,33 +185,27 @@ export async function analyzeResponsiveness(url: string): Promise<CategoryResult
     return {
       score: 0,
       issues: [makeIssue('critical', 'Responsiveness analysis failed',
-        `Could not load the page for browser testing: ${(error as Error).message}`,
+        `Could not fetch page for analysis: ${(error as Error).message}`,
         'Ensure the URL is publicly accessible.',
         'Unable to check responsive design.')],
       metrics: {},
     };
-  } finally {
-    if (browser) await browser.close();
   }
 }
 
-function calculateScore(
-  issues: AuditIssue[],
-  metrics: Record<string, string | number | boolean | null>,
-): number {
+function calculateScore(issues: AuditIssue[], a: HtmlAnalysis): number {
   let score = 10;
 
-  const overflowCount = typeof metrics.viewportsWithOverflow === 'number'
-    ? metrics.viewportsWithOverflow : 0;
+  // Positive boosts
+  if (a.hasResponsiveFramework) score = Math.min(score + 0.5, 10);
+  if (a.hasFlexOrGrid) score = Math.min(score + 0.3, 10);
+  if (a.hasViewportUnits) score = Math.min(score + 0.2, 10);
 
-  if (!metrics.viewportMeta) score -= 2.5;
-  if (!metrics.hasMediaQueries) score -= 1.5;
-  score -= Math.min(overflowCount * 1.0, 4.0);
-
+  // Deductions by issue severity
   for (const issue of issues) {
-    if (issue.title.includes('overflow') || issue.title.includes('Overflow')) continue;
-    if (issue.severity === 'major') score -= 0.5;
-    else if (issue.severity === 'minor') score -= 0.2;
+    if (issue.severity === 'critical') score -= 3;
+    else if (issue.severity === 'major') score -= 1.5;
+    else if (issue.severity === 'minor') score -= 0.5;
   }
 
   return Math.max(0, Math.min(10, Math.round(score * 10) / 10));
