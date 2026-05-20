@@ -1,15 +1,42 @@
 import app from './app';
-import { connectDatabase, disconnectDatabase } from './config/database';
+import { connectDatabase, disconnectDatabase, prisma } from './config/database';
 import { connectRedis, disconnectRedis } from './config/redis';
+import { scheduleAudit } from './services/audit.processor';
 import config from './config';
 import { logger } from './utils/logger';
 import * as fs from 'fs';
+
+async function recoverOrphanedAudits(): Promise<void> {
+  const stuck = await prisma.audit.findMany({
+    where: { status: { in: ['PENDING', 'RUNNING'] } },
+    select: { id: true, websiteUrl: true, repoUrl: true, projectType: true, framework: true },
+  });
+
+  if (stuck.length === 0) return;
+
+  logger.info(`Recovering ${stuck.length} orphaned audit(s) from previous run`);
+
+  for (const audit of stuck) {
+    await prisma.audit.update({ where: { id: audit.id }, data: { status: 'PENDING' } });
+    scheduleAudit({
+      auditId: audit.id,
+      websiteUrl: audit.websiteUrl,
+      repoUrl: audit.repoUrl ?? undefined,
+      // repoToken is not stored in DB — private repos will re-run without auth
+      projectType: audit.projectType ?? 'website',
+      framework: audit.framework ?? 'html',
+    });
+  }
+}
 
 async function start(): Promise<void> {
   fs.mkdirSync(config.audit.tmpDir, { recursive: true });
 
   await connectDatabase();
   await connectRedis();
+
+  // Re-schedule any audits that were in-flight when the process last exited
+  await recoverOrphanedAudits();
 
   const server = app.listen(config.port, () => {
     logger.info(`Server running on port ${config.port}`, {
