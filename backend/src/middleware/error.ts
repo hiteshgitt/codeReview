@@ -34,9 +34,11 @@ export function errorHandler(
     });
   }
 
+  const exposeMessage = isOperational || process.env.NODE_ENV !== 'production';
+
   res.status(statusCode).json({
     success: false,
-    message: err.message || 'Internal server error',
+    message: exposeMessage ? err.message || 'Internal server error' : 'Internal server error',
     ...(process.env.NODE_ENV === 'development' && { stack: err.stack }),
   });
 }

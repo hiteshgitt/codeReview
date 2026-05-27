@@ -3,6 +3,15 @@ import path from 'path';
 
 dotenv.config({ path: path.join(__dirname, '../../.env') });
 
+const REQUIRED_IN_PRODUCTION = ['DATABASE_URL', 'JWT_SECRET', 'FRONTEND_URL'];
+
+if (process.env.NODE_ENV === 'production') {
+  const missing = REQUIRED_IN_PRODUCTION.filter((k) => !process.env[k]);
+  if (missing.length > 0) {
+    throw new Error(`Missing required environment variables: ${missing.join(', ')}`);
+  }
+}
+
 export const config = {
   env: process.env.NODE_ENV || 'development',
   port: parseInt(process.env.PORT || '4000', 10),
@@ -21,7 +30,7 @@ export const config = {
   },
 
   jwt: {
-    secret: process.env.JWT_SECRET || 'fallback-secret-change-in-production',
+    secret: process.env.JWT_SECRET || (process.env.NODE_ENV === 'production' ? '' : 'dev-only-secret'),
     expiresIn: process.env.JWT_EXPIRES_IN || '7d',
   },
 
