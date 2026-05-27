@@ -1,12 +1,18 @@
-FROM node:20-alpine
+FROM node:20-slim
 
 # git is required by the code-quality service for repo cloning
-RUN apk add --no-cache git ca-certificates openssl
+# Playwright/Chromium deps are installed via playwright install --with-deps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git ca-certificates openssl \
+  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 COPY package*.json ./
 RUN npm ci
+
+# Install Chromium and its OS dependencies for Playwright
+RUN npx playwright install chromium --with-deps
 
 COPY . .
 
