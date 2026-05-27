@@ -55,7 +55,7 @@ function buildReportHTML(audit: AuditForReport): string {
 
   const categoryCards = categories
     .map(({ key, label }) => {
-      const cat = audit.scores[key];
+      const cat = audit.scores[key] ?? { score: 0, issues: [], metrics: {} };
       const color = getScoreColor(cat.score);
       return `
         <div class="category-card">
@@ -67,7 +67,7 @@ function buildReportHTML(audit: AuditForReport): string {
     .join('');
 
   const allIssues = categories.flatMap(({ key, label }) =>
-    audit.scores[key].issues.map((issue) => ({ ...issue, categoryLabel: label })),
+    (audit.scores[key]?.issues ?? []).map((issue) => ({ ...issue, categoryLabel: label })),
   );
 
   const issuesBySeverity = {
